@@ -5,7 +5,7 @@ from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import FSInputFile, Message
 from PIL import Image, ImageOps
 from dotenv import load_dotenv
 
@@ -60,14 +60,25 @@ async def convert_image(message: Message, file_id: str, suffix: str):
         out = Path(tmp) / "sticker.webp"
         try:
             file = await bot.get_file(file_id)
+            if not file.file_path:
+                raise RuntimeError("Telegram did not return a file path")
+
             await bot.download_file(file.file_path, src)
+            if not src.exists() or src.stat().st_size == 0:
+                raise RuntimeError("Downloaded image is empty")
+
             if src.stat().st_size > MAX_DOWNLOAD:
                 await message.answer("That image is too large. Please send an image under 20 MB.")
                 return
+
             make_sticker(src, out)
-            await message.answer_sticker(sticker=out.read_bytes())
+            if not out.exists() or out.stat().st_size == 0:
+                raise RuntimeError("Sticker file was not created")
+
+            # aiogram 3 requires an InputFile object for file uploads.
+            await message.answer_sticker(sticker=FSInputFile(out))
         except Exception as exc:
-            print(f"Conversion error: {exc}")
+            print(f"Conversion error: {type(exc).__name__}: {exc}")
             await message.answer("I couldn't convert that image. Please try a JPG, PNG, JPEG or WEBP image.")
 
 
