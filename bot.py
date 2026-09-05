@@ -1,11 +1,12 @@
 import asyncio
 import os
 import tempfile
+from io import BytesIO
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import FSInputFile, Message
+from aiogram.types import BufferedInputFile, Message
 from PIL import Image, ImageOps
 from dotenv import load_dotenv
 
@@ -17,19 +18,37 @@ if not TOKEN:
 bot = Bot(TOKEN)
 dp = Dispatcher()
 MAX_DOWNLOAD = 20 * 1024 * 1024
+MAX_STICKER_SIZE = 512 * 1024
 STICKER_SIZE = 512
 
 
-def make_sticker(source: Path, output: Path) -> None:
-    with Image.open(source) as im:
-        im = ImageOps.exif_transpose(im).convert("RGBA")
-        # Telegram static stickers must fit within 512x512 while preserving aspect ratio.
+def make_sticker(source: Path) -> bytes:
+    """Convert an image to a Telegram-compatible static WEBP sticker."""
+    with Image.open(source) as original:
+        im = ImageOps.exif_transpose(original).convert("RGBA")
         im.thumbnail((STICKER_SIZE, STICKER_SIZE), Image.Resampling.LANCZOS)
+
         canvas = Image.new("RGBA", (STICKER_SIZE, STICKER_SIZE), (0, 0, 0, 0))
         x = (STICKER_SIZE - im.width) // 2
         y = (STICKER_SIZE - im.height) // 2
         canvas.alpha_composite(im, (x, y))
-        canvas.save(output, "WEBP", lossless=True, method=6)
+
+        # Telegram static stickers must be WEBP and no larger than 512 KB.
+        # Start with good quality, then reduce it if necessary.
+        for quality in (90, 85, 80, 75, 70, 65, 60, 55, 50):
+            buffer = BytesIO()
+            canvas.save(
+                buffer,
+                format="WEBP",
+                lossless=False,
+                quality=quality,
+                method=6,
+            )
+            data = buffer.getvalue()
+            if len(data) <= MAX_STICKER_SIZE:
+                return data
+
+        raise ValueError("Could not compress the sticker below Telegram's 512 KB limit")
 
 
 @dp.message(Command("start"))
@@ -55,15 +74,17 @@ async def help_cmd(message: Message):
 async def convert_image(message: Message, file_id: str, suffix: str):
     if message.from_user is None:
         return
+
     with tempfile.TemporaryDirectory() as tmp:
         src = Path(tmp) / f"source{suffix}"
-        out = Path(tmp) / "sticker.webp"
+
         try:
             file = await bot.get_file(file_id)
             if not file.file_path:
                 raise RuntimeError("Telegram did not return a file path")
 
             await bot.download_file(file.file_path, src)
+
             if not src.exists() or src.stat().st_size == 0:
                 raise RuntimeError("Downloaded image is empty")
 
@@ -71,15 +92,18 @@ async def convert_image(message: Message, file_id: str, suffix: str):
                 await message.answer("That image is too large. Please send an image under 20 MB.")
                 return
 
-            make_sticker(src, out)
-            if not out.exists() or out.stat().st_size == 0:
-                raise RuntimeError("Sticker file was not created")
+            sticker_data = make_sticker(src)
+            if not sticker_data:
+                raise RuntimeError("Sticker data is empty")
 
-            # aiogram 3 requires an InputFile object for file uploads.
-            await message.answer_sticker(sticker=FSInputFile(out))
+            sticker = BufferedInputFile(sticker_data, filename="sticker.webp")
+            await message.answer_sticker(sticker=sticker, emoji="🖼️")
+
         except Exception as exc:
             print(f"Conversion error: {type(exc).__name__}: {exc}")
-            await message.answer("I couldn't convert that image. Please try a JPG, PNG, JPEG or WEBP image.")
+            await message.answer(
+                "I couldn't convert that image right now. Please try sending the image again."
+            )
 
 
 @dp.message(F.photo)
@@ -94,15 +118,21 @@ async def document_handler(message: Message):
     doc = message.document
     mime = (doc.mime_type or "").lower()
     name = (doc.file_name or "").lower()
-    allowed = mime in {"image/jpeg", "image/png", "image/webp"} or name.endswith((".jpg", ".jpeg", ".png", ".webp"))
+    allowed = (
+        mime in {"image/jpeg", "image/png", "image/webp"}
+        or name.endswith((".jpg", ".jpeg", ".png", ".webp"))
+    )
+
     if not allowed:
         await message.answer("Please send a JPG, JPEG, PNG or WEBP image.")
         return
+
     if doc.file_size and doc.file_size > MAX_DOWNLOAD:
         await message.answer("That image is too large. Please send an image under 20 MB.")
         return
+
     await message.answer("Converting your image...")
-    suffix = Path(doc.file_name or "image.jpg").suffix or ".jpg"
+    suffix = Path(doc.file_name or "image.jpg").suffix.lower() or ".jpg"
     await convert_image(message, doc.file_id, suffix)
 
 
