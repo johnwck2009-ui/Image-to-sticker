@@ -15,9 +15,6 @@ TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
-# Set ADMIN_ID in Render environment variables to your Telegram numeric user ID.
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-
 # Bot modes
 GLOBAL_BOT_MODE = "NORMAL"
 
@@ -29,10 +26,6 @@ dp = Dispatcher()
 MAX_DOWNLOAD = 20 * 1024 * 1024
 MAX_STICKER_SIZE = 512 * 1024
 STICKER_SIZE = 512
-
-
-def is_admin(message: Message) -> bool:
-    return message.from_user is not None and message.from_user.id == ADMIN_ID
 
 
 def redirect_markup() -> InlineKeyboardMarkup:
@@ -127,13 +120,12 @@ async def text_handler(message: Message):
 
     text = (message.text or "").strip().upper()
 
-    # Only the configured admin can change the bot mode.
-    if is_admin(message) and text == "REDIRECT":
+    if text == "REDIRECT":
         GLOBAL_BOT_MODE = "REDIRECT"
         await message.answer("Redirect mode activated.")
         return
 
-    if is_admin(message) and text == "REVERSE":
+    if text == "REVERSE":
         GLOBAL_BOT_MODE = "NORMAL"
         await message.answer("Normal image-to-sticker mode activated.")
         return
@@ -226,8 +218,6 @@ async def main():
     print(f"Image to Sticker bot is running in {GLOBAL_BOT_MODE} mode...")
     if not REDIRECT_IMAGE.exists():
         print(f"Warning: redirect image not found at {REDIRECT_IMAGE}")
-    if ADMIN_ID == 0:
-        print("Warning: ADMIN_ID is not configured. REDIRECT/REVERSE commands are disabled.")
     await dp.start_polling(bot)
 
 
