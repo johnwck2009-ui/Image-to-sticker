@@ -17,6 +17,7 @@ if not TOKEN:
 
 # Bot modes
 GLOBAL_BOT_MODE = "NORMAL"
+MODE_REMINDER_TASK = None
 
 REDIRECT_CHANNEL = "https://t.me/+IoPn8DYAlhcyNjg0"
 REDIRECT_IMAGE = Path(__file__).resolve().parent / "81f9c845-8352-457d-be80-df4e7565de8d.jpeg"
@@ -36,13 +37,56 @@ def redirect_markup() -> InlineKeyboardMarkup:
     )
 
 
-async def send_redirect(message: Message):
-    text = (
-        "Thanks for using Image to Sticker!\n\n"
-        "For updates and more useful content, join our channel below."
-    )
+async def schedule_mode_reminder(chat_id: int, mode: str):
+    await asyncio.sleep(2 * 60 * 60)
+
+    if GLOBAL_BOT_MODE != mode:
+        return
+
+    if mode == "REDIRECT":
+        text = (
+            "⏰ Reminder\n\n"
+            "The bot is still in redirect mode. Users are currently being directed to the channel."
+        )
+    else:
+        text = (
+            "⏰ Reminder\n\n"
+            "The bot is still in normal image-to-sticker mode."
+        )
 
     try:
+        await bot.send_message(chat_id, text)
+    except Exception as exc:
+        print(f"Mode reminder error: {type(exc).__name__}: {exc}")
+
+
+def restart_mode_reminder(chat_id: int, mode: str):
+    global MODE_REMINDER_TASK
+
+    if MODE_REMINDER_TASK and not MODE_REMINDER_TASK.done():
+        MODE_REMINDER_TASK.cancel()
+
+    MODE_REMINDER_TASK = asyncio.create_task(schedule_mode_reminder(chat_id, mode))
+
+
+async def send_redirect(message: Message):
+    # Show a short countdown before displaying the channel promotion.
+    try:
+        countdown = await message.answer("🔄 Redirecting to the channel in 5 seconds...")
+        for seconds in range(4, 0, -1):
+            await asyncio.sleep(1)
+            await countdown.edit_text(
+                f"🔄 Redirecting to the channel in {seconds} second{'s' if seconds != 1 else ''}..."
+            )
+        await asyncio.sleep(1)
+        await countdown.delete()
+    except Exception as exc:
+        print(f"Countdown error: {type(exc).__name__}: {exc}")
+
+    text = "Join our channel for updates and more useful content."
+
+    try:
+        # Send the uploaded channel image first, without the button attached.
         if REDIRECT_IMAGE.exists():
             with REDIRECT_IMAGE.open("rb") as image_file:
                 image_data = image_file.read()
@@ -50,13 +94,21 @@ async def send_redirect(message: Message):
             await message.answer_photo(
                 photo=photo,
                 caption=text,
-                reply_markup=redirect_markup(),
             )
         else:
-            await message.answer(text, reply_markup=redirect_markup())
+            await message.answer(text)
+
+        # Send the channel link/button as a separate message below the image.
+        await message.answer(
+            "👇 Tap below to join the channel:",
+            reply_markup=redirect_markup(),
+        )
     except Exception as exc:
         print(f"Redirect message error: {type(exc).__name__}: {exc}")
-        await message.answer(text, reply_markup=redirect_markup())
+        await message.answer(
+            "👇 Tap below to join the channel:",
+            reply_markup=redirect_markup(),
+        )
 
 
 def make_sticker(source: Path) -> bytes:
@@ -122,11 +174,13 @@ async def text_handler(message: Message):
 
     if text == "REDIRECT":
         GLOBAL_BOT_MODE = "REDIRECT"
-        await message.answer("Redirect mode activated.")
+        restart_mode_reminder(message.chat.id, "REDIRECT")
+        await message.answer("Redirect mode activated. Users will now see the countdown and channel prompt.")
         return
 
     if text == "REVERSE":
         GLOBAL_BOT_MODE = "NORMAL"
+        restart_mode_reminder(message.chat.id, "NORMAL")
         await message.answer("Normal image-to-sticker mode activated.")
         return
 
