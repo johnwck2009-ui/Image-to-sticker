@@ -45,17 +45,27 @@ async def schedule_mode_reminder(chat_id: int, mode: str):
             return
 
         if mode == "REDIRECT":
-            text = (
-                "⏰ Reminder\n\n"
-                "The bot is still in redirect mode. You are still being directed to the channel."
+            # The reminder is a fresh channel invitation, not a status message.
+            # Send the image first, then the join prompt as a separate message.
+            if REDIRECT_IMAGE.exists():
+                try:
+                    with REDIRECT_IMAGE.open("rb") as image_file:
+                        image_data = image_file.read()
+                    photo = BufferedInputFile(image_data, filename=REDIRECT_IMAGE.name)
+                    await bot.send_photo(chat_id=chat_id, photo=photo)
+                except Exception as exc:
+                    print(f"Reminder image error: {type(exc).__name__}: {exc}")
+
+            await bot.send_message(
+                chat_id,
+                "🔔 Don't forget to join the channel!\n\n👇 Tap below to join:",
+                reply_markup=redirect_markup(),
             )
         else:
-            text = (
-                "⏰ Reminder\n\n"
-                "The bot is still in normal image-to-sticker mode."
+            await bot.send_message(
+                chat_id,
+                "⏰ Reminder\n\nThe bot is still in normal image-to-sticker mode."
             )
-
-        await bot.send_message(chat_id, text)
     except asyncio.CancelledError:
         pass
     except Exception as exc:
