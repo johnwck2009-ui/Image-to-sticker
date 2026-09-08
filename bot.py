@@ -4,6 +4,7 @@ import tempfile
 from io import BytesIO
 from pathlib import Path
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -21,6 +22,7 @@ MODE_REMINDER_TASKS = {}
 
 REDIRECT_CHANNEL = "https://t.me/+IoPn8DYAlhcyNjg0"
 REDIRECT_IMAGE = Path(__file__).resolve().parent / "81f9c845-8352-457d-be80-df4e7565de8d.jpeg"
+REMINDER_SECONDS = 2 * 60 * 60
 
 bot = Bot(TOKEN)
 dp = Dispatcher()
@@ -37,50 +39,54 @@ def redirect_markup() -> InlineKeyboardMarkup:
     )
 
 
-async def schedule_mode_reminder(chat_id: int, mode: str):
+async def send_channel_reminder(chat_id: int):
+    """Send the reminder image first, then the channel button as a separate message."""
+    if REDIRECT_IMAGE.exists():
+        try:
+            with REDIRECT_IMAGE.open("rb") as image_file:
+                image_data = image_file.read()
+            photo = BufferedInputFile(image_data, filename=REDIRECT_IMAGE.name)
+            await bot.send_photo(chat_id=chat_id, photo=photo)
+        except Exception as exc:
+            print(f"Reminder image error: {type(exc).__name__}: {exc}")
+
+    await bot.send_message(
+        chat_id,
+        "🔔 Don't forget to join the channel!\n\n👇 Tap below to join:",
+        reply_markup=redirect_markup(),
+    )
+
+
+async def schedule_mode_reminder(chat_id: int):
+    """Keep reminding the user every two hours while redirect mode is active."""
     try:
-        await asyncio.sleep(2 * 60 * 60)
+        while GLOBAL_BOT_MODE == "REDIRECT":
+            await asyncio.sleep(REMINDER_SECONDS)
 
-        if GLOBAL_BOT_MODE != mode:
-            return
+            if GLOBAL_BOT_MODE != "REDIRECT":
+                return
 
-        if mode == "REDIRECT":
-            # The reminder is a fresh channel invitation, not a status message.
-            # Send the image first, then the join prompt as a separate message.
-            if REDIRECT_IMAGE.exists():
-                try:
-                    with REDIRECT_IMAGE.open("rb") as image_file:
-                        image_data = image_file.read()
-                    photo = BufferedInputFile(image_data, filename=REDIRECT_IMAGE.name)
-                    await bot.send_photo(chat_id=chat_id, photo=photo)
-                except Exception as exc:
-                    print(f"Reminder image error: {type(exc).__name__}: {exc}")
+            try:
+                await send_channel_reminder(chat_id)
+                print(f"Two-hour channel reminder sent to chat {chat_id}")
+            except Exception as exc:
+                print(f"Reminder send error for chat {chat_id}: {type(exc).__name__}: {exc}")
 
-            await bot.send_message(
-                chat_id,
-                "🔔 Don't forget to join the channel!\n\n👇 Tap below to join:",
-                reply_markup=redirect_markup(),
-            )
-        else:
-            await bot.send_message(
-                chat_id,
-                "⏰ Reminder\n\nThe bot is still in normal image-to-sticker mode."
-            )
     except asyncio.CancelledError:
         pass
     except Exception as exc:
-        print(f"Mode reminder error: {type(exc).__name__}: {exc}")
+        print(f"Mode reminder error for chat {chat_id}: {type(exc).__name__}: {exc}")
     finally:
         MODE_REMINDER_TASKS.pop(chat_id, None)
 
 
-def schedule_chat_reminder(chat_id: int, mode: str):
+def schedule_chat_reminder(chat_id: int):
     existing = MODE_REMINDER_TASKS.get(chat_id)
     if existing and not existing.done():
         return
 
     MODE_REMINDER_TASKS[chat_id] = asyncio.create_task(
-        schedule_mode_reminder(chat_id, mode)
+        schedule_mode_reminder(chat_id)
     )
 
 
@@ -92,7 +98,7 @@ def cancel_all_reminders():
 
 
 async def send_redirect(message: Message):
-    schedule_chat_reminder(message.chat.id, "REDIRECT")
+    schedule_chat_reminder(message.chat.id)
 
     # First show a five-second countdown. Nothing else is sent during the countdown.
     countdown = None
@@ -194,7 +200,7 @@ async def text_handler(message: Message):
     if text == "REDIRECT":
         GLOBAL_BOT_MODE = "REDIRECT"
         cancel_all_reminders()
-        schedule_chat_reminder(message.chat.id, "REDIRECT")
+        schedule_chat_reminder(message.chat.id)
         await message.answer("Redirect mode activated.")
         return
 
@@ -288,11 +294,35 @@ async def document_handler(message: Message):
     await convert_image(message, doc.file_id, suffix)
 
 
+async def health_handler(request):
+    return web.Response(text="OK")
+
+
+async def start_health_server():
+    """Expose a tiny HTTP endpoint so a free Render service can be kept awake."""
+    port = int(os.getenv("PORT", "10000"))
+    app = web.Application()
+    app.router.add_get("/", health_handler)
+    app.router.add_get("/health", health_handler)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"Health server listening on port {port}")
+    return runner
+
+
 async def main():
     print(f"Image to Sticker bot is running in {GLOBAL_BOT_MODE} mode...")
     if not REDIRECT_IMAGE.exists():
         print(f"Warning: redirect image not found at {REDIRECT_IMAGE}")
-    await dp.start_polling(bot)
+
+    health_runner = await start_health_server()
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await health_runner.cleanup()
 
 
 if __name__ == "__main__":
