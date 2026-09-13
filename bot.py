@@ -143,6 +143,9 @@ async def fallback(message: Message):
 
 async def main():
     print("Image to Sticker bot is running...")
+    # Remove any old Telegram webhook left by the previous webhook version.
+    # The bot uses long polling, so a webhook must not remain configured.
+    await bot.delete_webhook(drop_pending_updates=False)
     await dp.start_polling(bot)
 
 
